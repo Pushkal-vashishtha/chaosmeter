@@ -8,7 +8,9 @@ services:
       POSTGRES_PASSWORD: chaos
       POSTGRES_DB: chaos
     ports: ["5432:5432"]
-    volumes: [pgdata:/var/lib/postgresql/data]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U chaos"]
       interval: 5s
@@ -23,6 +25,41 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  payment-svc:
+    build: ./services/payment-svc
+    ports: ["3002:3002"]
+    environment:
+      PORT: "3002"
+      PAYMENT_LATENCY_MS: "50"
+      PAYMENT_FAILURE_RATE: "0"
+    volumes:
+      - ./services/payment-svc/src:/app/src:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3002/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  order-api:
+    build: ./services/order-api
+    ports: ["3000:3000"]
+    environment:
+      PORT: "3000"
+      DATABASE_URL: postgres://chaos:chaos@postgres:5432/chaos
+      REDIS_URL: redis://redis:6379
+      PAYMENT_URL: http://payment-svc:3002
+      PAYMENT_TIMEOUT_MS: "1000"
+      CACHE_TTL_SECONDS: "30"
+    volumes:
+      - ./services/order-api/src:/app/src:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      payment-svc:
+        condition: service_started
 
   prometheus:
     image: prom/prometheus:v3.15.1
