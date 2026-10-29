@@ -147,3 +147,20 @@ Toolkit](https://chaostoolkit.org), [Netflix Chaos
 Monkey](https://github.com/Netflix/chaosmonkey), AWS Fault Injection Service.
 Litmus's experiment and result modelling informed the schema design here.
 Vocabulary follows [principlesofchaos.org](https://principlesofchaos.org).
+
+
+
+## Safety: two layers of limits
+
+| Layer | Where | Can be changed by | Purpose |
+| --- | --- | --- | --- |
+| Schema ceiling | `ExperimentSpec` field constraints | Code change only | Absolute maximum. 300s duration, 3 targets. No deployment can exceed it. |
+| Configured limit | `Settings`, from environment | Deployment config | Per-environment tightening. Currently 120s, 2 targets. |
+
+The configured limit can only be **stricter** than the schema ceiling. A
+misconfiguration can make the platform safer, never more dangerous — an
+operator cannot set `MAX_EXPERIMENT_DURATION_SECONDS=86400` and run a
+day-long experiment.
+
+Verified: `duration_seconds: 200` passes schema validation and is rejected
+by the safety layer; `9999` is rejected by the schema first.
