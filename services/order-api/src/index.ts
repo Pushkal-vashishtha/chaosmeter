@@ -2,13 +2,33 @@ import Fastify from "fastify";
 import { z } from "zod";
 import pg from "pg";
 import { Redis } from "ioredis";
-
+import {
+    registry, httpRequestsTotal, httpRequestDuration,
+    dependencyRequestsTotal, dependencyDuration
+} from "./metrics.js";
 import { error } from "console";
 const PORT = Number(process.env.PORT ?? 3000);
 const PAYMENT_URL = process.env.PAYMENT_URL ?? "http://payment-svc:3002";
 const PAYMENT_TIMEOUT_MS = Number(process.env.PAYMENT_TIMEOUT_MS ?? 1000);
 const CACHE_TTL_SECONDS = Number(process.env.CACHE_TTL_SECONDS ?? 30);
 const app = Fastify({ logger: true });
+
+
+app.addHook("onResponse", async (req, reply) => {
+    const route = req.routeOptions?.url ?? "unknown";
+    const labels = {
+        method: req.method,
+        route,
+        status_code: String(reply.statusCode),
+    };
+    httpRequestsTotal.inc(labels);
+    httpRequestDuration.observe(labels, reply.elapsedTime / 1000);
+});
+
+app.get("/metrics", async (_req, reply) => {
+    reply.header("content-type", registry.contentType);
+    return registry.metrics();
+});
 
 const pool = new pg.Pool({
     connectionString: process.env.DATABASE_URL,
@@ -60,6 +80,27 @@ app.post("/orders", async (req, reply) => {
     const orderId: string = rows[0].id;
     let status = "failed";
     let paymentRef: string | null = null;
+    // try {
+    //     const res = await fetch(`${PAYMENT_URL}/payments`, {
+    //         method: "POST",
+    //         headers: { "content-type": "application/json" },
+    //         body: JSON.stringify({ orderId, amountCents }),
+    //         signal: AbortSignal.timeout(PAYMENT_TIMEOUT_MS),
+    //     });
+    //     if (res.ok) {
+    //         const body = (await res.json()) as { paymentRef: string };
+    //         paymentRef = body.paymentRef;
+    //         status = "paid";
+    //     } else {
+    //         req.log.warn({ orderId, httpStatus: res.status }, "payment rejected");
+    //     }
+    // } catch (err) {
+    //     const name = (err as Error).name;
+    //     req.log.warn({ orderId, name }, name === "TimeoutError" ? "payment timedout" : "payment call failed");
+
+    // }
+
+    const stopTimer = dependencyDuration.startTimer({ dependency: "payment-svc" });
     try {
         const res = await fetch(`${PAYMENT_URL}/payments`, {
             method: "POST",
@@ -67,17 +108,23 @@ app.post("/orders", async (req, reply) => {
             body: JSON.stringify({ orderId, amountCents }),
             signal: AbortSignal.timeout(PAYMENT_TIMEOUT_MS),
         });
+        stopTimer();
+
         if (res.ok) {
             const body = (await res.json()) as { paymentRef: string };
             paymentRef = body.paymentRef;
             status = "paid";
+            dependencyRequestsTotal.inc({ dependency: "payment-svc", outcome: "success" });
         } else {
+            dependencyRequestsTotal.inc({ dependency: "payment-svc", outcome: "error" });
             req.log.warn({ orderId, httpStatus: res.status }, "payment rejected");
         }
     } catch (err) {
+        stopTimer();
         const name = (err as Error).name;
-        req.log.warn({ orderId, name }, name === "TimeoutError" ? "payment timedout" : "payment call failed");
-
+        const outcome = name === "TimeoutError" ? "timeout" : "error";
+        dependencyRequestsTotal.inc({ dependency: "payment-svc", outcome });
+        req.log.warn({ orderId, name }, `payment ${outcome}`);
     }
     const updated = await pool.query(
         `update orders set status = $2, payment_ref = $3 where id = $1

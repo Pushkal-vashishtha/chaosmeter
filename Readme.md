@@ -164,3 +164,14 @@ day-long experiment.
 
 Verified: `duration_seconds: 200` passes schema validation and is rejected
 by the safety layer; `9999` is rejected by the schema first.
+### Measurement lesson: quantiles over mixed populations
+
+An unfiltered p95 on `payment-svc` returned 9.8ms against a configured
+50ms injected latency. The query was aggregating `/payments` together with
+`/healthz`, which fires every 5s and returns in ~1ms. The health checks
+outnumbered real traffic and dominated the quantile.
+
+**A quantile computed over mixed route populations is meaningless.** The
+measurement layer must filter every SLI query to its specific route.
+Otherwise a burst of health-check traffic during an experiment will pull
+p95 down and make a genuine SLO breach disappear from the data.

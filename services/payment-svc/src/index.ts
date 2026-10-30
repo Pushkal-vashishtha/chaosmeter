@@ -2,13 +2,28 @@ import Fastify from "fastify";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
-
+import { registry, httpRequestsTotal, httpRequestDuration } from "./metrics.js";
 
 const PORT = Number(process.env.PORT ?? 3002);
 const LATENCY_MS = Number(process.env.PAYMENT_LATENCY_MS ?? 50);
 const FAILURE_RATE = Number(process.env.PAYMENT_FAILURE_RATE ?? 0);
 const app = Fastify({ logger: true });
 
+app.addHook("onResponse", async (req, reply) => {
+    const route = req.routeOptions?.url ?? "unknown";
+    const labels = {
+        method: req.method,
+        route,
+        status_code: String(reply.statusCode),
+    };
+    httpRequestsTotal.inc(labels);
+    httpRequestDuration.observe(labels, reply.elapsedTime / 1000);
+});
+
+app.get("/metrics", async (_req, reply) => {
+    reply.header("content-type", registry.contentType);
+    return registry.metrics();
+});
 
 const PaymentRequest = z.object({
     orderId: z.string().uuid(),
